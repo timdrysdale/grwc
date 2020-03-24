@@ -21,7 +21,7 @@ import (
 
 func New(config *Config) (*Client, error) {
 
-	connectionID := uuid.New().String()[:3]
+	connectionID := uuid.New().String()[:6]
 	if !config.ExclusiveConnection {
 		connectionID = "*"
 	}

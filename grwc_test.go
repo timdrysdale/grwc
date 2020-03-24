@@ -3,21 +3,18 @@ package grwc
 import (
 	"bufio"
 	"bytes"
-	"fmt"
+	"encoding/gob"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"reflect"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
-	"github.com/timdrysdale/agg"
-	"github.com/timdrysdale/hub"
 	"github.com/timdrysdale/reconws"
+	"github.com/timdrysdale/srgob"
 )
 
 func init() {
@@ -26,41 +23,74 @@ func init() {
 
 }
 
-func TestInstantiateHub(t *testing.T) {
+func TestExclusiveConnectionID(t *testing.T) {
 
-	mh := agg.New()
+	//time.Sleep(time.Millisecond)
 
-	h := New(mh)
+	wsReport := make(chan reconws.WsMessage)
 
-	if reflect.TypeOf(h.Broadcast) != reflect.TypeOf(make(chan hub.Message)) {
-		t.Error("Hub.Broadcast channel of wrong type")
-	}
-	if reflect.TypeOf(h.Clients) != reflect.TypeOf(make(map[string]*Client)) {
-		t.Error("Hub.Clients map of wrong type")
-	}
-	if reflect.TypeOf(h.Add) != reflect.TypeOf(make(chan Rule)) {
-		t.Error("Hub.Add channel of wrong type")
-	}
+	// Create test server with the echo handler.
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		report(w, r, wsReport)
+	}))
+	defer s.Close()
 
-	if reflect.TypeOf(h.Delete) != reflect.TypeOf(make(chan string)) {
-		t.Errorf("Hub.Delete channel of wrong type wanted/got %v %v", reflect.TypeOf(""), reflect.TypeOf(h.Delete))
-	}
+	destination := "ws" + strings.TrimPrefix(s.URL, "http") //s.URL //"ws://localhost:8081"
 
-	if reflect.TypeOf(h.Rules) != reflect.TypeOf(make(map[string]Rule)) {
-		t.Error("Hub.Broadcast channel of wrong type")
+	config := Config{
+		Destination:         destination,
+		ExclusiveConnection: true,
 	}
 
-}
+	c, err := New(&config)
 
-func TestAddRule(t *testing.T) {
-
-	mh := agg.New()
-	h := New(mh)
+	if err != nil {
+		t.Errorf("Problem creating client")
+	}
 
 	closed := make(chan struct{})
 	defer close(closed)
 
-	go h.Run(closed)
+	go c.Run(closed)
+
+	time.Sleep(time.Millisecond)
+
+	message := []byte("Foo")
+
+	c.Send <- message
+
+	select {
+	case <-time.After(time.Millisecond):
+		t.Errorf("Report timed out")
+	case msg, ok := <-wsReport:
+		if ok {
+
+			//decode gob
+			var srMsg srgob.Message
+			rdr := bytes.NewReader(msg.Data)
+			decoder := gob.NewDecoder(rdr)
+			err := decoder.Decode(&srMsg)
+			if err != nil {
+				t.Errorf("Error decoding gob %v", err)
+			}
+
+			if bytes.Compare(srMsg.Data, message) != 0 {
+				t.Errorf("Message did not match. Want: %v\nGot : %v\n", message, msg)
+			}
+			expectedLen := 6
+			actualLen := len(srMsg.ConnectionID)
+			if actualLen != expectedLen {
+				t.Errorf("ConnectionID wrong length. Wanted %d\nGot : %d\n", expectedLen, actualLen)
+			}
+		} else {
+			t.Errorf("Report channel not ok")
+		}
+
+	}
+
+}
+
+func TestExclusiveEcho(t *testing.T) {
 
 	// Create test server with the echo handler.
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -68,65 +98,47 @@ func TestAddRule(t *testing.T) {
 	}))
 	defer s.Close()
 
-	id := "rule0"
-	stream := "stream/large"
 	destination := "ws" + strings.TrimPrefix(s.URL, "http") //s.URL //"ws://localhost:8081"
 
-	r := &Rule{Id: id,
-		Stream:      stream,
-		Destination: destination}
-
-	h.Add <- *r
-
-	time.Sleep(time.Millisecond)
-
-	if _, ok := h.Rules[id]; !ok {
-		t.Error("Rule not registered in Rules")
-
-	} else {
-
-		if h.Rules[id].Destination != destination {
-			t.Errorf("Rule has incorrect destination wanted/got %v %v\n", destination, h.Rules[id].Destination)
-		}
-		if h.Rules[id].Stream != stream {
-			t.Errorf("Rule has incorrect stream wanted/got %v %v\n", stream, h.Rules[id].Stream)
-		}
+	config := Config{
+		Destination:         destination,
+		ExclusiveConnection: true,
 	}
-}
 
-func TestCannotAddDeleteAllRule(t *testing.T) {
+	c, err := New(&config)
 
-	mh := agg.New()
-	h := New(mh)
+	if err != nil {
+		t.Errorf("Problem creating client")
+	}
 
 	closed := make(chan struct{})
 	defer close(closed)
 
-	go h.Run(closed)
-
-	// Create test server with the echo handler.
-	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		echo(w, r)
-	}))
-	defer s.Close()
-
-	id := "deleteAll"
-	stream := "stream/large"
-	destination := "ws" + strings.TrimPrefix(s.URL, "http") //s.URL //"ws://localhost:8081"
-
-	r := &Rule{Id: id,
-		Stream:      stream,
-		Destination: destination}
-
-	h.Add <- *r
+	go c.Run(closed)
 
 	time.Sleep(time.Millisecond)
 
-	if _, ok := h.Rules[id]; ok {
-		t.Error("Rule deleteAll incorrectly accepted into Rules")
+	message := []byte("Foo")
+
+	c.Send <- message
+
+	select {
+	case <-time.After(time.Millisecond):
+		t.Errorf("Receive timed out")
+	case msg, ok := <-c.Receive:
+		if ok {
+			if bytes.Compare(msg, message) != 0 {
+				t.Errorf("Message did not match. Want: %v\nGot : %v\n", message, msg)
+			}
+		} else {
+			t.Errorf("Channel not ok")
+		}
 
 	}
+
 }
+
+/*
 
 func TestAddRules(t *testing.T) {
 
@@ -833,7 +845,7 @@ func TestSendMessageToChangingDestination(t *testing.T) {
 	close(reply1)
 	wg.Wait()
 }
-
+*/
 var upgrader = websocket.Upgrader{}
 
 func echo(w http.ResponseWriter, r *http.Request) {

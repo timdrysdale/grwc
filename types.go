@@ -8,7 +8,6 @@ import (
 )
 
 type Config struct {
-	Context             context.Context
 	Destination         string
 	ExclusiveConnection bool
 }
