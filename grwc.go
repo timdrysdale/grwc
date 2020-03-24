@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
+	"errors"
+	"net/url"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -14,29 +16,38 @@ import (
 
 // ********************************************************************************
 
+// TODO - fix the destinations /topics thing - in this implementation, destination must have
+// routing for the topic, so not needed separately in the struct
+// TODO - how does SA keep track of connectionID - should it just send on every message?
+//        that simplifies the need for an admin channel ... is taken care of by websocket routing
+
 // grwc assumes a single outgoing connection, but we still run relay goros
 // because we need to send an initial message to set connectionID and destination
-func New(config *Config) *Client {
+func New(config *Config) (*Client, error) {
 
 	connectionID := uuid.New().String()[:3]
 	if !config.ExclusiveConnection {
 		connectionID = "*"
 	}
 
-	c := &Client{
-		ConnectionID: connectionID,
-		Topic:        config.Topic,
-		Destination:  config.Destination,
-		Send:         make(chan []byte),
-		SendAdmin:    make(chan srgob.Message),
-		Receive:      make(chan []byte),
-		ReceiveAdmin: make(chan srgob.Message),
+	//early warning; reconws will sanity check the Destination too
+	if !destinationOK(config.Destination) {
+		return nil, errors.New("Bad Destination")
 	}
 
-	return c
+	c := &Client{
+		ConnectionID:        connectionID, //not in config, we just generated it
+		Destination:         config.Destination,
+		ExclusiveConnection: config.ExclusiveConnection,
+		Send:                make(chan []byte),
+		Receive:             make(chan []byte),
+		ReceiveGob:          make(chan srgob.Message),
+	}
+
+	return c, nil
 }
 
-func (c *Client) Run(ready chan struct{}) {
+func (c *Client) Run() {
 
 	//on exit, close client
 	defer func() {
@@ -50,24 +61,11 @@ func (c *Client) Run(ready chan struct{}) {
 	c.Context, c.Cancel = context.WithCancel(context.Background())
 	go c.RelayIn()
 	go c.RelayOut()
-	go c.Websocket.Reconnect(c.Context, c.Destination) //TODO sanity check the destination
+	go c.Websocket.Reconnect(c.Context, c.Destination)
 	//user must check stats to learn of errors - TODO, are we doing stats?
 	// an RPC style return on start is of limited value because clients are long lived
 	// so we'll need to check the stats later anyway; better just to do things one way
 
-	//TODO fix the possibility of a race for first message ...
-	// TODO drain send? Or just say that user must wait until Ready is closed before sending?
-
-	// send the first message to set up the connectionID and topic.
-
-	hello := srgob.Message{
-		Topic:        c.Topic,
-		ConnectionID: c.ConnectionID,
-	}
-
-	c.SendAdmin <- hello
-
-	close(ready)
 	// caller to issue c.Cancel() to stop RelayIn() & RelayOut()
 }
 
@@ -83,29 +81,18 @@ LOOP:
 		select {
 		case <-c.Context.Done():
 			break LOOP
-		case adminMsg, ok := <-c.SendAdmin:
-			// gob the struct and send
-			if ok {
-				gobbedMsg.Reset() //reset buffer before we encode into it
-				err := encoder.Encode(adminMsg)
-				if err != nil {
-					log.Errorf("Error gobbing admin message %v\n", err)
-					return //bail out TODO bail out sensibly...
-				}
-				c.Websocket.Out <- reconws.WsMessage{Data: gobbedMsg.Bytes(), Type: websocket.BinaryMessage}
-			}
 		case msg, ok := <-c.Send:
 			// assemble an srgob struct, gob it, and send
 			if ok {
 				msg := srgob.Message{
-					//omit admin details on all but first message
-					Data: msg,
+					ConnectionID: c.ConnectionID,
+					Data:         msg,
 				}
 				gobbedMsg.Reset() //reset buffer before we encode into it
 				err := encoder.Encode(msg)
 				if err != nil {
 					log.Errorf("Error gobbing message %v\n", err)
-					return //bail out TODO bail out sensibly...
+					c.Cancel() //TODO bail out sensibly...
 				}
 				c.Websocket.Out <- reconws.WsMessage{Data: gobbedMsg.Bytes(), Type: websocket.BinaryMessage}
 			}
@@ -113,7 +100,7 @@ LOOP:
 	}
 }
 
-// relay messages from websocket server to the hub until stopped
+// receive messages from websocket server until stopped
 func (c *Client) RelayIn() {
 
 	var srMsg srgob.Message
@@ -134,12 +121,41 @@ LOOP:
 					log.Errorf("Error decoding message %v\n", err)
 					return //bail out TODO bail out sensibly...
 				}
-				if srMsg.ConnectionID != "" && srMsg.Topic != "" { //need both to count as admin message
-					c.ReceiveAdmin <- srMsg
-				} else { //assume data message
+				if c.ExclusiveConnection { //just receive data
 					c.Receive <- srMsg.Data
+				} else { //non-exclusive, need connectionID so send gob
+					c.ReceiveGob <- srMsg
+
 				}
 			}
 		}
 	}
+}
+
+func destinationOK(urlStr string) bool {
+
+	if urlStr == "" {
+		log.Error("Can't dial an empty Url")
+		return false
+	}
+
+	// parse to check, dial with original string
+	u, err := url.Parse(urlStr)
+
+	if err != nil {
+		log.Error("Url:", err)
+		return false
+	}
+
+	if u.Scheme != "ws" && u.Scheme != "wss" {
+		log.Error("Url needs to start with ws or wss")
+		return false
+	}
+
+	if u.User != nil {
+		log.Error("Url can't contain user name and password")
+		return false
+	}
+
+	return true
 }
