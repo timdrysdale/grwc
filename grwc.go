@@ -16,13 +16,9 @@ import (
 
 // ********************************************************************************
 
-// TODO - fix the destinations /topics thing - in this implementation, destination must have
-// routing for the topic, so not needed separately in the struct
-// TODO - how does SA keep track of connectionID - should it just send on every message?
-//        that simplifies the need for an admin channel ... is taken care of by websocket routing
+// Destination must have routing for the topic, so not needed separately in the struct
+// connectionID is sent on every message, to simplify demultiplexing and avoid admin messages
 
-// grwc assumes a single outgoing connection, but we still run relay goros
-// because we need to send an initial message to set connectionID and destination
 func New(config *Config) (*Client, error) {
 
 	connectionID := uuid.New().String()[:3]
@@ -30,7 +26,6 @@ func New(config *Config) (*Client, error) {
 		connectionID = "*"
 	}
 
-	//early warning; reconws will sanity check the Destination too
 	if !destinationOK(config.Destination) {
 		return nil, errors.New("Bad Destination")
 	}
@@ -47,18 +42,18 @@ func New(config *Config) (*Client, error) {
 	return c, nil
 }
 
-func (c *Client) Run() {
+func (c *Client) Run(closed chan struct{}) {
 
-	//on exit, close client
+	// start the reconws
+	c.Websocket = reconws.New()
+	c.Context, c.Cancel = context.WithCancel(context.Background())
+
 	defer func() {
 		//may panic if a client is closed just before exiting
 		//but if exiting, a panic is less of an issue
 		c.Cancel()
 	}()
 
-	// start the reconws
-	c.Websocket = reconws.New()
-	c.Context, c.Cancel = context.WithCancel(context.Background())
 	go c.RelayIn()
 	go c.RelayOut()
 	go c.Websocket.Reconnect(c.Context, c.Destination)
@@ -66,7 +61,8 @@ func (c *Client) Run() {
 	// an RPC style return on start is of limited value because clients are long lived
 	// so we'll need to check the stats later anyway; better just to do things one way
 
-	// caller to issue c.Cancel() to stop RelayIn() & RelayOut()
+	<-closed // caller should close(closed) to stop the client
+
 }
 
 // relay messages from the hub to the websocket client until stopped
@@ -92,9 +88,9 @@ LOOP:
 				err := encoder.Encode(msg)
 				if err != nil {
 					log.Errorf("Error gobbing message %v\n", err)
-					c.Cancel() //TODO bail out sensibly...
+				} else {
+					c.Websocket.Out <- reconws.WsMessage{Data: gobbedMsg.Bytes(), Type: websocket.BinaryMessage}
 				}
-				c.Websocket.Out <- reconws.WsMessage{Data: gobbedMsg.Bytes(), Type: websocket.BinaryMessage}
 			}
 		}
 	}
@@ -119,13 +115,12 @@ LOOP:
 				err := decoder.Decode(&srMsg)
 				if err != nil {
 					log.Errorf("Error decoding message %v\n", err)
-					return //bail out TODO bail out sensibly...
-				}
-				if c.ExclusiveConnection { //just receive data
-					c.Receive <- srMsg.Data
-				} else { //non-exclusive, need connectionID so send gob
-					c.ReceiveGob <- srMsg
-
+				} else {
+					if c.ExclusiveConnection { //just receive data
+						c.Receive <- srMsg.Data
+					} else { //non-exclusive, need connectionID so send gob
+						c.ReceiveGob <- srMsg
+					}
 				}
 			}
 		}
