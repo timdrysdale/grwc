@@ -208,6 +208,72 @@ func TestExclusiveEcho(t *testing.T) {
 
 }
 
+func TestExclusiveEchoTwice(t *testing.T) {
+
+	// Create test server with the echo handler.
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		echo(w, r)
+	}))
+	defer s.Close()
+
+	destination := "ws" + strings.TrimPrefix(s.URL, "http") //s.URL //"ws://localhost:8081"
+
+	config := Config{
+		Destination:         destination,
+		ExclusiveConnection: true,
+	}
+
+	c, err := New(&config)
+
+	if err != nil {
+		t.Errorf("Problem creating client")
+	}
+
+	closed := make(chan struct{})
+	defer close(closed)
+
+	go c.Run(closed)
+
+	time.Sleep(time.Millisecond)
+
+	message := []byte("Foo")
+
+	c.Send <- message
+
+	select {
+	case <-time.After(time.Millisecond):
+		t.Errorf("Receive timed out")
+	case msg, ok := <-c.Receive:
+		if ok {
+			if bytes.Compare(msg, message) != 0 {
+				t.Errorf("Message did not match. Want: %v\nGot : %v\n", message, msg)
+			}
+		} else {
+			t.Errorf("Channel not ok")
+		}
+
+	}
+
+	message = []byte("Bar")
+
+	c.Send <- message
+
+	select {
+	case <-time.After(time.Millisecond):
+		t.Errorf("Receive timed out")
+	case msg, ok := <-c.Receive:
+		if ok {
+			if bytes.Compare(msg, message) != 0 {
+				t.Errorf("Message did not match. Want: %v\nGot : %v\n", message, msg)
+			}
+		} else {
+			t.Errorf("Channel not ok")
+		}
+
+	}
+
+}
+
 func TestExclusiveMultipleMessages(t *testing.T) {
 
 	// Create test server with the echo handler.
@@ -236,7 +302,7 @@ func TestExclusiveMultipleMessages(t *testing.T) {
 
 	time.Sleep(time.Millisecond)
 
-	for _, char := range "ab" {
+	for _, char := range loweralpha() {
 
 		message := []byte(string(char))
 		expected := message

@@ -70,8 +70,6 @@ func (c *Client) RelayOut() {
 
 	var gobbedMsg bytes.Buffer
 
-	encoder := gob.NewEncoder(&gobbedMsg)
-
 LOOP:
 	for {
 		select {
@@ -85,6 +83,7 @@ LOOP:
 					Data:         msg,
 				}
 				gobbedMsg.Reset() //reset buffer before we encode into it
+				encoder := gob.NewEncoder(&gobbedMsg)
 				err := encoder.Encode(msg)
 				if err != nil {
 					log.Errorf("Error gobbing message %v\n", err)
