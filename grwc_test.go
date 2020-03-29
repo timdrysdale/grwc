@@ -78,7 +78,7 @@ func TestExclusiveConnectionID(t *testing.T) {
 				t.Errorf("Message did not match. Want: %v\nGot : %v\n", message, msg)
 			}
 			expectedLen := 6
-			actualLen := len(srMsg.ConnectionID)
+			actualLen := len(srMsg.ID)
 			if actualLen != expectedLen {
 				t.Errorf("ConnectionID wrong length. Wanted %d\nGot : %d\n", expectedLen, actualLen)
 			}
@@ -144,13 +144,13 @@ func TestNonExclusiveConnectionID(t *testing.T) {
 				t.Errorf("Message did not match. Want: %v\nGot : %v\n", message, msg)
 			}
 			expectedLen := 1
-			actualLen := len(srMsg.ConnectionID)
+			actualLen := len(srMsg.ID)
 			if actualLen != expectedLen {
 				t.Errorf("ConnectionID wrong length. Wanted %d\nGot : %d\n", expectedLen, actualLen)
 			}
 			expectedID := "*"
-			if srMsg.ConnectionID != expectedID {
-				t.Errorf("ConnectionID wrong. Want: %v\nGot : %v\n", expectedID, srMsg.ConnectionID)
+			if srMsg.ID != expectedID {
+				t.Errorf("ConnectionID wrong. Want: %v\nGot : %v\n", expectedID, srMsg.ID)
 			}
 		} else {
 			t.Errorf("Report channel not ok")

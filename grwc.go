@@ -21,9 +21,9 @@ import (
 
 func New(config *Config) (*Client, error) {
 
-	connectionID := uuid.New().String()[:6]
+	ID := uuid.New().String()[:6]
 	if !config.ExclusiveConnection {
-		connectionID = "*"
+		ID = "*"
 	}
 
 	if !destinationOK(config.Destination) {
@@ -31,7 +31,7 @@ func New(config *Config) (*Client, error) {
 	}
 
 	c := &Client{
-		ConnectionID:        connectionID, //not in config, we just generated it
+		ID:                  ID, //not in config, we just generated it
 		Destination:         config.Destination,
 		ExclusiveConnection: config.ExclusiveConnection,
 		Send:                make(chan []byte),
@@ -79,8 +79,8 @@ LOOP:
 			// assemble an srgob struct, gob it, and send
 			if ok {
 				msg := srgob.Message{
-					ConnectionID: c.ConnectionID,
-					Data:         msg,
+					ID:   c.ID,
+					Data: msg,
 				}
 				gobbedMsg.Reset() //reset buffer before we encode into it
 				encoder := gob.NewEncoder(&gobbedMsg)

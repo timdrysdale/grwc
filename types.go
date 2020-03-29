@@ -15,9 +15,9 @@ type Config struct {
 type Client struct {
 	Cancel              context.CancelFunc
 	Context             context.Context
-	ConnectionID        string
 	Destination         string
 	ExclusiveConnection bool
+	ID                  string
 	Receive             chan []byte
 	ReceiveGob          chan srgob.Message
 	Send                chan []byte
